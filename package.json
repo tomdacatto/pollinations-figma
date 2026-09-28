@@ -1,0 +1,13 @@
+{
+    "name": "pollinations-figma",
+    "version": "0.1.0",
+    "description": "Figma plugin: generate and edit images with Pollinations, paying with your own Pollen.",
+    "scripts": {
+        "build": "tsc -p ."
+    },
+    "license": "MIT",
+    "devDependencies": {
+        "@figma/plugin-typings": "^1.100.0",
+        "typescript": "^5.4.5"
+    }
+}

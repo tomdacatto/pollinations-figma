@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  body { font: 12px -apple-system, BlinkMacSystemFont, sans-serif; margin: 12px; color: #333; }
+  label { display: block; margin-top: 10px; font-weight: 600; }
+  input, textarea { width: 100%; box-sizing: border-box; margin-top: 4px; padding: 6px; border: 1px solid #ccc; border-radius: 4px; font: inherit; }
+  textarea { resize: vertical; min-height: 50px; }
+  button { margin-top: 10px; width: 100%; padding: 8px; border: none; border-radius: 4px; background: #18a0fb; color: white; font-weight: 600; cursor: pointer; }
+  button.secondary { background: #eee; color: #333; }
+  button:disabled { opacity: 0.5; cursor: default; }
+  #status { margin-top: 8px; color: #666; min-height: 14px; }
+  a { color: #18a0fb; }
+</style>
+</head>
+<body>
+  <label for="apiKey">API key (<a href="https://enter.pollinations.ai/keys" target="_blank">get one</a>)</label>
+  <input id="apiKey" type="password" placeholder="pk_... or sk_..." />
+
+  <label for="model">Model (<a href="https://gen.pollinations.ai/image/models" target="_blank">browse models</a>)</label>
+  <input id="model" type="text" placeholder="flux" />
+
+  <label for="prompt">Prompt</label>
+  <textarea id="prompt" placeholder="a cozy pixel-art tavern interior"></textarea>
+
+  <button id="fillBtn">Fill selected shape</button>
+  <button id="newBtn" class="secondary">Insert as new image</button>
+  <button id="editBtn" class="secondary">Edit selected image</button>
+  <div id="status"></div>
+
+<script>
+  const GEN_BASE = "https://gen.pollinations.ai";
+  const MEDIA_BASE = "https://media.pollinations.ai";
+
+  const apiKeyEl = document.getElementById("apiKey");
+  const modelEl = document.getElementById("model");
+  const promptEl = document.getElementById("prompt");
+  const statusEl = document.getElementById("status");
+  const buttons = [document.getElementById("fillBtn"), document.getElementById("newBtn"), document.getElementById("editBtn")];
+
+  parent.postMessage({ pluginMessage: { type: "load-settings" } }, "*");
+
+  apiKeyEl.addEventListener("change", saveSettings);
+  modelEl.addEventListener("change", saveSettings);
+
+  function saveSettings() {
+    parent.postMessage(
+      { pluginMessage: { type: "save-settings", apiKey: apiKeyEl.value.trim(), model: modelEl.value.trim() || "flux" } },
+      "*",
+    );
+  }
+
+  function setBusy(busy, message) {
+    for (const button of buttons) button.disabled = busy;
+    statusEl.textContent = message || "";
+  }
+
+  async function generate(prompt, imageUrl) {
+    const key = apiKeyEl.value.trim();
+    const model = modelEl.value.trim() || "flux";
+    if (!key) throw new Error("Set an API key first.");
+    let url = `${GEN_BASE}/image/${encodeURIComponent(prompt)}?model=${encodeURIComponent(model)}`;
+    if (imageUrl) url += `&image=${encodeURIComponent(imageUrl)}`;
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${key}` } });
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+    return new Uint8Array(await res.arrayBuffer());
+  }
+
+  async function uploadForEditing(bytes) {
+    const key = apiKeyEl.value.trim();
+    const form = new FormData();
+    form.append("file", new Blob([bytes], { type: "image/png" }), "selection.png");
+    const res = await fetch(`${MEDIA_BASE}/upload`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${key}` },
+      body: form,
+    });
+    if (!res.ok) throw new Error(`Upload failed: ${res.status} ${res.statusText}`);
+    const data = await res.json();
+    return data.url;
+  }
+
+  document.getElementById("fillBtn").addEventListener("click", () => runGenerate("fill"));
+  document.getElementById("newBtn").addEventListener("click", () => runGenerate("new"));
+  document.getElementById("editBtn").addEventListener("click", runEdit);
+
+  async function runGenerate(target) {
+    const prompt = promptEl.value.trim();
+    if (!prompt) return setBusy(false, "Type a prompt first.");
+    setBusy(true, "Generating...");
+    try {
+      const bytes = await generate(prompt);
+      parent.postMessage({ pluginMessage: { type: "apply-image", bytes, target } }, "*");
+      setBusy(false, "Done.");
+    } catch (error) {
+      setBusy(false, `Error: ${error.message}`);
+    }
+  }
+
+  let pendingEditResolve = null;
+  window.onmessage = (event) => {
+    const msg = event.data.pluginMessage;
+    if (!msg) return;
+    if (msg.type === "settings") {
+      apiKeyEl.value = msg.apiKey || "";
+      modelEl.value = msg.model || "flux";
+    } else if (msg.type === "selected-image" && pendingEditResolve) {
+      pendingEditResolve(msg.bytes);
+      pendingEditResolve = null;
+    }
+  };
+
+  async function runEdit() {
+    const prompt = promptEl.value.trim();
+    if (!prompt) return setBusy(false, "Describe the edit first.");
+    setBusy(true, "Reading selection...");
+    try {
+      const sourceBytes = await new Promise((resolve) => {
+        pendingEditResolve = resolve;
+        parent.postMessage({ pluginMessage: { type: "get-selected-image" } }, "*");
+      });
+      if (!sourceBytes) return setBusy(false, "Select a shape with an image fill first.");
+
+      setBusy(true, "Uploading selection...");
+      const imageUrl = await uploadForEditing(sourceBytes);
+
+      setBusy(true, "Generating edit...");
+      const bytes = await generate(prompt, imageUrl);
+      parent.postMessage({ pluginMessage: { type: "apply-image", bytes, target: "fill" } }, "*");
+      setBusy(false, "Done.");
+    } catch (error) {
+      setBusy(false, `Error: ${error.message}`);
+    }
+  }
+</script>
+</body>
+</html>
